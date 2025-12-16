@@ -26,6 +26,7 @@
 #include "plansys2_executor/ExecutorNode.hpp"
 #include "plansys2_executor/ActionExecutor.hpp"
 #include "plansys2_executor/BTBuilder.hpp"
+#include "plansys2_executor/EffectFailure.hpp"
 #include "plansys2_problem_expert/Utils.hpp"
 #include "plansys2_pddl_parser/Utils.hpp"
 
@@ -49,6 +50,8 @@
 #include "plansys2_executor/behavior_tree/check_timeout_node.hpp"
 #include "plansys2_executor/behavior_tree/apply_atstart_effect_node.hpp"
 #include "plansys2_executor/behavior_tree/apply_atend_effect_node.hpp"
+#include "plansys2_executor/behavior_tree/check_atstart_effect_node.hpp"
+#include "plansys2_executor/behavior_tree/check_atend_effect_node.hpp"
 
 namespace plansys2
 {
@@ -58,7 +61,8 @@ using namespace std::chrono_literals;
 
 ExecutorNode::ExecutorNode()
 : rclcpp_lifecycle::LifecycleNode("executor"),
-  bt_builder_loader_("plansys2_executor", "plansys2::BTBuilder")
+  bt_builder_loader_("plansys2_executor", "plansys2::BTBuilder"),
+  sensing_plugins_loader_("plansys2_executor", "plansys2::PredicateSensingBase")
 {
   using namespace std::placeholders;
 
@@ -174,6 +178,8 @@ ExecutorNode::on_configure(const rclcpp_lifecycle::State & state)
   domain_client_ = std::make_shared<plansys2::DomainExpertClient>();
   problem_client_ = std::make_shared<plansys2::ProblemExpertClient>();
   planner_client_ = std::make_shared<plansys2::PlannerClient>();
+
+  loadPredicateSensingPlugins();
 
   RCLCPP_INFO(get_logger(), "[%s] Configured", get_name());
   return CallbackReturnT::SUCCESS;
@@ -466,6 +472,8 @@ ExecutorNode::execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
   factory.registerNodeType<ApplyAtStartEffect>("ApplyAtStartEffect");
   factory.registerNodeType<ApplyAtEndEffect>("ApplyAtEndEffect");
   factory.registerNodeType<CheckTimeout>("CheckTimeout");
+  factory.registerNodeType<CheckAtStartEffect>("CheckAtStartEffect");
+  factory.registerNodeType<CheckAtEndEffect>("CheckAtEndEffect");
 
   (*action_map)[":0"].at_start_effects_applied_time = now();
   (*action_map)[":0"].at_end_effects_applied_time = now();
@@ -477,6 +485,8 @@ ExecutorNode::execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
   blackboard->set("domain_client", domain_client_);
   blackboard->set("problem_client", problem_client_);
   blackboard->set("bt_builder", bt_builder);
+  blackboard->set("predicate_sensing_registry", 
+    std::make_shared<PredicateSensingRegistry>(predicate_sensing_registry_));
 
   auto tree = factory.createTreeFromText(bt_xml_tree, blackboard);
 
@@ -514,6 +524,16 @@ ExecutorNode::execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
   }
 
   if (status == BT::NodeStatus::FAILURE) {
+    std::vector<EffectFailure> effect_failures;
+
+    if (blackboard->get("start_effect_failures", effect_failures)) {
+      logEffectFailures(get_logger(), "[START EFFECT FAILURE]", effect_failures);
+    }
+    
+    if(blackboard->get("end_effect_failures", effect_failures)){
+      logEffectFailures(get_logger(), "[END EFFECT FAILURE]", effect_failures);
+    }
+
     tree.haltTree();
     RCLCPP_ERROR(get_logger(), "Executor BT finished with FAILURE state");
   }
@@ -650,6 +670,30 @@ ExecutorNode::print_execution_info(
       fprintf(stderr, "\tAt end effects applied\n");
     } else {
       fprintf(stderr, "\tAt end effects NOT applied\n");
+    }
+  }
+}
+
+void 
+ExecutorNode::loadPredicateSensingPlugins()
+{
+  std::vector<std::string> plugins = sensing_plugins_loader_.getDeclaredClasses();
+
+  for (const auto & plugin_name : plugins) {
+    try {
+      auto sensor = sensing_plugins_loader_.createSharedInstance(plugin_name);
+
+      predicate_sensing_registry_[sensor->get_predicate_name()] = sensor;
+
+      RCLCPP_INFO(get_logger(), "[%s] Loaded sensor plugin: %s (predicate: %s)", 
+        get_name(), 
+        plugin_name.c_str(), 
+        sensor->get_predicate_name().c_str());
+    } catch (const pluginlib::PluginlibException & ex) {
+      RCLCPP_ERROR(get_logger(), "[%s] Failed to load sensor plugin %s: %s", 
+        get_name(), 
+        plugin_name.c_str(), 
+        ex.what());
     }
   }
 }

@@ -1,0 +1,15 @@
+<Sequence name="ACTION_ID">
+WAIT_PREV_ACTIONS
+  <WaitAtStartReq action="ACTION_ID"/>
+  <ApplyAtStartEffect action="ACTION_ID"/>
+  <ReactiveSequence name="ACTION_ID">
+    <CheckOverAllReq action="ACTION_ID"/>
+    <Parallel>
+      <CheckAtStartEffect action="ACTION_ID" delay="1" start_effect_failures="{start_effect_failures}"/>
+      <ExecuteAction action="ACTION_ID"/>
+    </Parallel>
+  </ReactiveSequence>
+  <CheckAtEndReq action="ACTION_ID"/>
+  <CheckAtEndEffect action="ACTION_ID" end_effect_failures="{end_effect_failures}"/>
+  <ApplyAtEndEffect action="ACTION_ID"/>
+</Sequence>

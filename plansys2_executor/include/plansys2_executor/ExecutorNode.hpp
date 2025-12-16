@@ -25,6 +25,7 @@
 #include "plansys2_planner/PlannerClient.hpp"
 #include "plansys2_executor/ActionExecutor.hpp"
 #include "plansys2_executor/BTBuilder.hpp"
+#include "plansys2_executor/PredicateSensingBase.hpp"
 
 #include "lifecycle_msgs/msg/state.hpp"
 #include "lifecycle_msgs/msg/transition.hpp"
@@ -53,6 +54,8 @@ public:
   using GoalHandleExecutePlan = rclcpp_action::ServerGoalHandle<ExecutePlan>;
   using CallbackReturnT =
     rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+  using PredicateSensingRegistry = 
+    std::unordered_map<std::string, std::shared_ptr<PredicateSensingBase>>;
 
   ExecutorNode();
 
@@ -82,6 +85,9 @@ protected:
   std::string start_action_bt_xml_;
   std::string end_action_bt_xml_;
   pluginlib::ClassLoader<plansys2::BTBuilder> bt_builder_loader_;
+
+  pluginlib::ClassLoader<plansys2::PredicateSensingBase> sensing_plugins_loader_;
+  PredicateSensingRegistry predicate_sensing_registry_;
 
   std::shared_ptr<plansys2::DomainExpertClient> domain_client_;
   std::shared_ptr<plansys2::ProblemExpertClient> problem_client_;
@@ -116,6 +122,8 @@ protected:
 
   void print_execution_info(
     std::shared_ptr<std::map<std::string, ActionExecutionInfo>> exec_info);
+
+  void loadPredicateSensingPlugins();
 };
 
 }  // namespace plansys2
