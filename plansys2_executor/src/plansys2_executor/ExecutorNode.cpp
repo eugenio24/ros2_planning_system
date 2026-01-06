@@ -26,7 +26,7 @@
 #include "plansys2_executor/ExecutorNode.hpp"
 #include "plansys2_executor/ActionExecutor.hpp"
 #include "plansys2_executor/BTBuilder.hpp"
-#include "plansys2_executor/EffectFailure.hpp"
+#include "plansys2_executor/effect_monitoring/EffectFailure.hpp"
 #include "plansys2_problem_expert/Utils.hpp"
 #include "plansys2_pddl_parser/Utils.hpp"
 
@@ -62,7 +62,8 @@ using namespace std::chrono_literals;
 ExecutorNode::ExecutorNode()
 : rclcpp_lifecycle::LifecycleNode("executor"),
   bt_builder_loader_("plansys2_executor", "plansys2::BTBuilder"),
-  sensing_plugins_loader_("plansys2_executor", "plansys2::PredicateSensingBase")
+  predicate_sensing_loader_("plansys2_executor", "plansys2::PredicateSensingBase"),
+  function_sensing_loader_("plansys2_executor", "plansys2::FunctionSensingBase")
 {
   using namespace std::placeholders;
 
@@ -180,6 +181,7 @@ ExecutorNode::on_configure(const rclcpp_lifecycle::State & state)
   planner_client_ = std::make_shared<plansys2::PlannerClient>();
 
   loadPredicateSensingPlugins();
+  loadFunctionSensingPlugins();
 
   RCLCPP_INFO(get_logger(), "[%s] Configured", get_name());
   return CallbackReturnT::SUCCESS;
@@ -487,8 +489,10 @@ ExecutorNode::execute(const std::shared_ptr<GoalHandleExecutePlan> goal_handle)
   blackboard->set("bt_builder", bt_builder);
   blackboard->set("predicate_sensing_registry", 
     std::make_shared<PredicateSensingRegistry>(predicate_sensing_registry_));
-
-  auto tree = factory.createTreeFromText(bt_xml_tree, blackboard);
+  blackboard->set("function_sensing_registry", 
+      std::make_shared<FunctionSensingRegistry>(function_sensing_registry_)); 
+  
+      auto tree = factory.createTreeFromText(bt_xml_tree, blackboard);
 
   auto info_pub = create_wall_timer(
     1s, [this, &action_map]() {
@@ -674,23 +678,45 @@ ExecutorNode::print_execution_info(
   }
 }
 
-void 
-ExecutorNode::loadPredicateSensingPlugins()
+void ExecutorNode::loadPredicateSensingPlugins()
 {
-  std::vector<std::string> plugins = sensing_plugins_loader_.getDeclaredClasses();
+  std::vector<std::string> plugins = predicate_sensing_loader_.getDeclaredClasses();
 
   for (const auto & plugin_name : plugins) {
     try {
-      auto sensor = sensing_plugins_loader_.createSharedInstance(plugin_name);
+      auto sensor = predicate_sensing_loader_.createSharedInstance(plugin_name);
 
-      predicate_sensing_registry_[sensor->get_predicate_name()] = sensor;
+      predicate_sensing_registry_[sensor->get_symbol_name()] = sensor;
 
-      RCLCPP_INFO(get_logger(), "[%s] Loaded sensor plugin: %s (predicate: %s)", 
+      RCLCPP_INFO(get_logger(), "[%s] Loaded predicate sensor plugin: %s (predicate: %s)", 
         get_name(), 
         plugin_name.c_str(), 
-        sensor->get_predicate_name().c_str());
+        sensor->get_symbol_name().c_str());
     } catch (const pluginlib::PluginlibException & ex) {
-      RCLCPP_ERROR(get_logger(), "[%s] Failed to load sensor plugin %s: %s", 
+      RCLCPP_ERROR(get_logger(), "[%s] Failed to load predicate sensor plugin %s: %s", 
+        get_name(), 
+        plugin_name.c_str(), 
+        ex.what());
+    }
+  }
+}
+
+void ExecutorNode::loadFunctionSensingPlugins()
+{
+  std::vector<std::string> plugins = function_sensing_loader_.getDeclaredClasses();
+
+  for (const auto & plugin_name : plugins) {
+    try {
+      auto sensor = function_sensing_loader_.createSharedInstance(plugin_name);
+
+      function_sensing_registry_[sensor->get_symbol_name()] = sensor;
+
+      RCLCPP_INFO(get_logger(), "[%s] Loaded function sensor plugin: %s (function: %s)", 
+        get_name(), 
+        plugin_name.c_str(), 
+        sensor->get_symbol_name().c_str());
+    } catch (const pluginlib::PluginlibException & ex) {
+      RCLCPP_ERROR(get_logger(), "[%s] Failed to load function sensor plugin %s: %s", 
         get_name(), 
         plugin_name.c_str(), 
         ex.what());

@@ -22,8 +22,13 @@
 #include "behaviortree_cpp/action_node.h"
 
 #include "plansys2_executor/ActionExecutor.hpp"
-#include "plansys2_executor/PredicateSensingBase.hpp"
-#include "plansys2_executor/EffectFailure.hpp"
+
+#include "plansys2_executor/effect_monitoring/EffectFailure.hpp"
+#include "plansys2_executor/effect_monitoring/plugin_interfaces/PredicateSensingBase.hpp"
+#include "plansys2_executor/effect_monitoring/plugin_interfaces/FunctionSensingBase.hpp"
+#include "plansys2_executor/effect_monitoring/Utils.hpp"
+
+#include "plansys2_problem_expert/ProblemExpertClient.hpp"
 #include "plansys2_problem_expert/Utils.hpp"
 
 #include "plansys2_executor/behavior_tree/execute_action_node.hpp"
@@ -47,7 +52,7 @@ public:
       {
         BT::InputPort<std::string>("action", "Action whose at start effects must be checked"),
         BT::InputPort<double>("delay", "Delay before checking atstart effects"),
-        BT::OutputPort<std::vector<EffectFailure>>("start_effect_failures", "The failed predicates")
+        BT::OutputPort<std::vector<EffectFailure>>("start_effect_failures", "The failed effects")
       });
   }
 
@@ -56,10 +61,23 @@ private:
 
   std::shared_ptr<std::map<std::string, ActionExecutionInfo>> action_map_;
 
+  std::shared_ptr<plansys2::ProblemExpertClient> problem_client_;
+
   using PredicateSensingRegistry = std::unordered_map<std::string, std::shared_ptr<PredicateSensingBase>>;
   std::shared_ptr<PredicateSensingRegistry> predicate_sensing_registry_;
 
+  using FunctionSensingRegistry = std::unordered_map<std::string, std::shared_ptr<FunctionSensingBase>>;
+  std::shared_ptr<FunctionSensingRegistry> function_sensing_registry_;
+
   rclcpp::Time start_;
+
+  std::string log_prefix_;
+
+  std::optional<EffectFailure> 
+    check_predicate_effect(const ParsedEffect & eff);
+
+  std::optional<EffectFailure> 
+    check_function_effect(const ParsedEffect & eff);
 };
 
 }  // namespace plansys2

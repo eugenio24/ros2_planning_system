@@ -25,7 +25,9 @@
 #include "plansys2_planner/PlannerClient.hpp"
 #include "plansys2_executor/ActionExecutor.hpp"
 #include "plansys2_executor/BTBuilder.hpp"
-#include "plansys2_executor/PredicateSensingBase.hpp"
+#include "plansys2_executor/effect_monitoring/plugin_interfaces/SensingBase.hpp"
+#include "plansys2_executor/effect_monitoring/plugin_interfaces/PredicateSensingBase.hpp"
+#include "plansys2_executor/effect_monitoring/plugin_interfaces/FunctionSensingBase.hpp"
 
 #include "lifecycle_msgs/msg/state.hpp"
 #include "lifecycle_msgs/msg/transition.hpp"
@@ -56,6 +58,8 @@ public:
     rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
   using PredicateSensingRegistry = 
     std::unordered_map<std::string, std::shared_ptr<PredicateSensingBase>>;
+  using FunctionSensingRegistry = 
+    std::unordered_map<std::string, std::shared_ptr<FunctionSensingBase>>;
 
   ExecutorNode();
 
@@ -86,8 +90,11 @@ protected:
   std::string end_action_bt_xml_;
   pluginlib::ClassLoader<plansys2::BTBuilder> bt_builder_loader_;
 
-  pluginlib::ClassLoader<plansys2::PredicateSensingBase> sensing_plugins_loader_;
+  pluginlib::ClassLoader<plansys2::PredicateSensingBase> predicate_sensing_loader_;
   PredicateSensingRegistry predicate_sensing_registry_;
+
+  pluginlib::ClassLoader<plansys2::FunctionSensingBase> function_sensing_loader_;
+  FunctionSensingRegistry function_sensing_registry_;
 
   std::shared_ptr<plansys2::DomainExpertClient> domain_client_;
   std::shared_ptr<plansys2::ProblemExpertClient> problem_client_;
@@ -124,6 +131,7 @@ protected:
     std::shared_ptr<std::map<std::string, ActionExecutionInfo>> exec_info);
 
   void loadPredicateSensingPlugins();
+  void loadFunctionSensingPlugins();
 };
 
 }  // namespace plansys2

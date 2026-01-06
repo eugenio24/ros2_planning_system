@@ -15,6 +15,7 @@
 #include <string>
 #include <map>
 #include <memory>
+#include <cmath>
 
 #include "plansys2_executor/behavior_tree/check_atstart_effect_node.hpp"
 
@@ -30,9 +31,17 @@ CheckAtStartEffect::CheckAtStartEffect(
     config().blackboard->get<std::shared_ptr<std::map<std::string, ActionExecutionInfo>>>(
     "action_map");
 
+  problem_client_ =
+    config().blackboard->get<std::shared_ptr<plansys2::ProblemExpertClient>>(
+    "problem_client");
+
   predicate_sensing_registry_ =
     config().blackboard->get<std::shared_ptr<PredicateSensingRegistry>>(
     "predicate_sensing_registry");
+
+  function_sensing_registry_ =
+    config().blackboard->get<std::shared_ptr<FunctionSensingRegistry>>(
+    "function_sensing_registry");
 
   node_ = config().blackboard->get<rclcpp_lifecycle::LifecycleNode::SharedPtr>("node");
   start_ = rclcpp::Time(0, 0, node_->get_clock()->get_clock_type());
@@ -43,6 +52,8 @@ CheckAtStartEffect::tick()
 {
   std::string action;
   getInput("action", action);
+
+  log_prefix_ = "[" + action + "] [CheckAtStartEffect]";
 
   if (start_.nanoseconds() == 0) {
     start_ = node_->now();  // first tick
@@ -56,81 +67,172 @@ CheckAtStartEffect::tick()
     return BT::NodeStatus::RUNNING;
   }
 
-  auto effects = (*action_map_)[action].action_info.get_at_start_effects();
+  auto it = action_map_->find(action);
+  if (it == action_map_->end()) {
+    RCLCPP_ERROR_STREAM(node_->get_logger(),
+      log_prefix_ << " Action not found in action_map");
+    return BT::NodeStatus::FAILURE;
+  }
+  auto effects_tree = it->second.action_info.get_at_start_effects();
+
+  std::vector<ParsedEffect> parsed_effects;
+  if (!parse_effects_tree(effects_tree, parsed_effects, node_->get_logger(), problem_client_)) {
+    EffectFailure failure = EffectFailure::ParseError();
+    setOutput("start_effect_failures", std::vector<EffectFailure>{failure});
+
+    RCLCPP_ERROR_STREAM(node_->get_logger(), log_prefix_ << " Failed to parse at_start effects");
+    return BT::NodeStatus::FAILURE;
+  }
 
   std::vector<EffectFailure> failed;
 
-  auto next_is_negated = false;
-  for(const auto& effect_node: effects.nodes){
-    auto node_type = effect_node.node_type;
-    
-    if(node_type == plansys2_msgs::msg::Node::PREDICATE){
+  for (const auto & effect : parsed_effects) {
+    std::optional<EffectFailure> failure;
 
-      auto predicate = effect_node.name;
-      auto negated = next_is_negated;
-      std::vector<std::string> parameters;
-      parameters.reserve(effect_node.parameters.size());
-      for (const auto& p : effect_node.parameters) {
-        parameters.push_back(p.name);
-      }
-
-      auto it = predicate_sensing_registry_->find(predicate);
-
-      if (it == predicate_sensing_registry_->end()) {
-        // No sensor available
-        RCLCPP_ERROR_STREAM(node_->get_logger(), "[" << action << "]" 
-          << " [CheckAtStartEffect] No sensing plugin found for" << predicate);
-        failed.push_back({predicate, parameters, negated, EffectFailure::Reason::SENSING_MISSING});
-        continue;
-      }
-
-      auto sensor = it->second;
-      auto sense_result = sensor->sense(parameters);
-
-
-      if (sense_result.status == SensingResult::Status::ERROR) {
-        // Sensing failed; can't confirm
-
-        RCLCPP_ERROR_STREAM(node_->get_logger(), "[" << action << "]" 
-          << " [CheckAtStartEffect] Error sensing effect" << predicate << ": " << sense_result.message);
-        failed.push_back({predicate, parameters, negated, EffectFailure::Reason::SENSING_ERROR});
-        continue;
-      }
-
-      // Expected value: TRUE for normal predicate, FALSE for negated predicate
-      const bool expected = !negated;
-      const bool actual = (sense_result.status == SensingResult::Status::TRUE);
-
-
-      // Convert parameters to a string for printing
-      std::string param_str;
-      for (size_t i = 0; i < parameters.size(); ++i) {
-        param_str += parameters[i];
-        if (i < parameters.size() - 1)
-          param_str += ", ";
-      }
-
-      RCLCPP_INFO_STREAM(node_->get_logger(),
-          "[" << action << "] [CheckAtStartEffect] Predicate '" << predicate
-          << "(" << param_str << ")'"
-          << " expected: " << (expected ? "TRUE" : "FALSE")
-          << ", sensed: " << (actual ? "TRUE" : "FALSE"));
-
-      if (actual != expected) {
-        failed.push_back({predicate, parameters, negated, EffectFailure::Reason::FAILED});
-      }
-
+    if (effect.type == "predicate") {
+      failure = check_predicate_effect(effect);
+    } else if (effect.type == "function") {
+      failure = check_function_effect(effect);
+    } else {
+      RCLCPP_ERROR_STREAM(node_->get_logger(),
+        log_prefix_ << " Unknown effect type '" << effect.type << "'"); 
     }
 
-    // in msg::Node there is a negate field that should keep track of this but is not working
-    next_is_negated = node_type == plansys2_msgs::msg::Node::NOT;
+    if (failure.has_value()) {
+      failed.push_back(failure.value());
+    }
   }
 
-  if(!failed.empty()){
+  if (!failed.empty()) {
     setOutput("start_effect_failures", failed);
     return BT::NodeStatus::FAILURE;
   }else{
     return BT::NodeStatus::SUCCESS;
+  }
+}
+
+std::optional<EffectFailure>
+CheckAtStartEffect::check_predicate_effect(const ParsedEffect & eff)
+{
+  const auto & predicate = eff.name;
+  const auto & parameters = eff.parameters;
+  const bool negated = eff.negate;
+
+  auto it = predicate_sensing_registry_->find(predicate);
+  if (it == predicate_sensing_registry_->end()) {
+    RCLCPP_ERROR_STREAM(node_->get_logger(),
+      log_prefix_ << " No sensing plugin for predicate '" << predicate << "'");
+    return EffectFailure::SensingError(
+      predicate, parameters,
+      EffectFailure::EffectType::PREDICATE,
+      EffectFailure::Reason::SENSING_MISSING
+    );
+  }
+
+  auto result = it->second->sense(parameters);
+
+  if (result.status == PredicateSensingResult::Status::ERROR) {
+    RCLCPP_ERROR_STREAM(node_->get_logger(),
+      log_prefix_ << " Error sensing predicate '" << predicate << "': " << result.message);
+    return EffectFailure::SensingError(
+      predicate, parameters,
+      EffectFailure::EffectType::PREDICATE,
+      EffectFailure::Reason::SENSING_ERROR
+    );
+  }
+
+  const bool expected = !negated;
+  const bool actual = (result.status == PredicateSensingResult::Status::TRUE);
+
+  auto log_predicate = makeSymbolString(predicate, parameters);
+  RCLCPP_INFO_STREAM(node_->get_logger(),
+    log_prefix_ << " Predicate '" << log_predicate 
+    << "' expected: " << (expected ? "TRUE" : "FALSE") 
+    << ", sensed: " << (actual ? "TRUE" : "FALSE"));
+
+  if (actual != expected) {
+    return EffectFailure::PredicateFailure(
+      predicate, parameters, negated,
+      EffectFailure::Reason::FAILED
+    );
+  }else{
+    return std::nullopt;
+  }
+}
+
+std::optional<EffectFailure>
+CheckAtStartEffect::check_function_effect(const ParsedEffect & eff)
+{
+  const auto & function = eff.name;
+  const auto & parameters = eff.parameters;
+
+  auto it = function_sensing_registry_->find(function);
+  if (it == function_sensing_registry_->end()) {
+    RCLCPP_ERROR_STREAM(node_->get_logger(),
+      log_prefix_ << " No sensing plugin for function '" << function << "'");
+    return EffectFailure::SensingError(
+      function, parameters,
+      EffectFailure::EffectType::FUNCTION,
+      EffectFailure::Reason::SENSING_MISSING
+    );
+  }
+
+  auto result = it->second->sense(parameters);
+
+  if (result.status != FunctionSensingResult::Status::OK || !result.value.has_value()) {
+    RCLCPP_ERROR_STREAM(node_->get_logger(),
+      log_prefix_ << " Error sensing function '" << function << "': " << result.message);
+    return EffectFailure::SensingError(
+      function, parameters,
+      EffectFailure::EffectType::FUNCTION,
+      EffectFailure::Reason::SENSING_ERROR
+    );
+  }
+
+  double sensed = result.value.value();
+
+  auto function_str = makeSymbolString(function, parameters);
+  
+  auto fval = problem_client_->getFunction(function_str);
+  if (!fval.has_value()) {
+    RCLCPP_ERROR_STREAM(node_->get_logger(),
+      log_prefix_ << " Function '" << function_str << "' not found in problem expert");
+    return EffectFailure::SensingError(
+      function, parameters,
+      EffectFailure::EffectType::FUNCTION,
+      EffectFailure::Reason::PARSE_ERROR
+    );
+  }
+
+  double current = fval.value().value;
+
+  // NOTE:
+  // For at-start effects, the BT has already applied the effects
+  // to the Problem Expert *before* this CheckAtStartEffect node is executed.
+  // Therefore, the value currently stored in the Problem Expert already
+  // represents the EXPECTED value after the effect.
+  // For this reason, this function simply compare the sensed value
+  // against the current value in the Problem Expert.
+  //
+  // This is different for at-end effects, where the check is performed
+  // before applying the effects. In that case, the expected value
+  // must be computed explicitly as:
+  //   expected = current (+,-,*,/) effect.value
+  auto expected = current;
+
+  RCLCPP_INFO_STREAM(node_->get_logger(),
+    log_prefix_ << " Function '" << function_str
+    << "' expected: " << expected
+    << ", sensed: " << sensed);
+
+  constexpr double EPS = 1e-6;
+  if (std::fabs(sensed - expected) > EPS) {
+    return EffectFailure::FunctionFailure(
+      function, parameters, sensed, expected,
+      EffectFailure::Reason::FAILED
+    );
+  }else{
+    return std::nullopt;
   }
 }
 

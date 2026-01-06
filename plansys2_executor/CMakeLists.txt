@@ -66,6 +66,7 @@ set(EXECUTOR_SOURCES
   src/plansys2_executor/behavior_tree/apply_atend_effect_node.cpp
   src/plansys2_executor/behavior_tree/check_atstart_effect_node.cpp
   src/plansys2_executor/behavior_tree/check_atend_effect_node.cpp
+  src/plansys2_executor/effect_monitoring/Utils.cpp
 )
 
 
