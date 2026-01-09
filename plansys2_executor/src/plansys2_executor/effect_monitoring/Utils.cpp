@@ -65,7 +65,7 @@ std::tuple<bool,double> evaluate_numeric_node(
         case Node::ARITH_MULT: 
           return { true, left * right };
         case Node::ARITH_DIV:  
-          if(std::abs(right) > 1e-5) {
+          if(std::abs(right) > kNumericToleranceEPS) {
             return { true, left / right };
           } else {
             return { false, 0.0 }; // division by zero

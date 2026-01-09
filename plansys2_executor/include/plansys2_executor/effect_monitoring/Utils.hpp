@@ -27,6 +27,9 @@
 namespace plansys2
 {
 
+// Numeric comparison tolerance (epsilon) constant
+inline constexpr double kNumericToleranceEPS = 1e-6;
+
 struct ParsedEffect
 {
   std::string type;      // "predicate" | "function"

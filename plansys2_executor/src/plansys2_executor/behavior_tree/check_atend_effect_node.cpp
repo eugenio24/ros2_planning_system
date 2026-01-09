@@ -232,8 +232,7 @@ CheckAtEndEffect::check_function_effect(const ParsedEffect & eff)
     << "' expected: " << expected
     << ", sensed: " << sensed);
 
-  constexpr double EPS = 1e-6;
-  if (std::fabs(sensed - expected) > EPS) {
+  if (std::fabs(sensed - expected) > kNumericToleranceEPS) {
     return EffectFailure::FunctionFailure(
       function, parameters, sensed, expected,
       EffectFailure::Reason::FAILED
